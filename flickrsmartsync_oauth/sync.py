@@ -1,179 +1,181 @@
-import os
 import logging
+import os
 
-logger = logging.getLogger("flickrsmartsync_oauth")
+EXT_IMAGE = (
+             'jpg',
+             'jpeg',
+             'png',
+             'gif',
+             'tif',
+             'tiff',
+             'bmp'
+            )
+EXT_VIDEO = (
+             'm4v',
+             'mp4',
+             'avi',
+             'wmv',
+             'mov',
+             'mpg',
+             'mpeg',
+             '3gp',
+             'mts',
+             'm2ts',
+             'ogg',
+             'ogv')
 
-EXT_IMAGE = ('jpg', 'png', 'jpeg', 'gif', 'bmp')
-EXT_VIDEO = ('avi', 'wmv', 'mov', 'mp4', '3gp', 'ogg', 'ogv', 'mts')
-
+IMAGE_MAX_SIZE =      200 * 1024 * 1024 # 200MB
 VIDEO_MAX_SIZE = 1 * 1024 * 1024 * 1024 # 1GB
-IMAGE_MAX_SIZE = 200 * 1024 * 1024      # 200MB
+
+logger = logging.getLogger(__name__) # create logger
 
 class Sync(object):
+    def __init__(self, parser_args, local, remote):
+        global EXT_IMAGE, EXT_VIDEO, IMAGE_MAX_SIZE, VIDEO_MAX_SIZE
+        global valid_extensions
 
-    def __init__(self, cmd_args, local, remote):
-        global EXT_IMAGE, EXT_VIDEO, VIDEO_MAX_SIZE, IMAGE_MAX_SIZE
-        self.cmd_args = cmd_args
-        # Create local and remote objects
+        self.parser_args = parser_args
+
+        if self.parser_args.ignore_extensions: # comma separated list of filename extensions to ignore
+            ignore_extensions = self.parser_args.ignore_extensions.split(',')
+            EXT_IMAGE = filter(lambda e: e not in ignore_extensions, EXT_IMAGE)
+            EXT_VIDEO = filter(lambda e: e not in ignore_extensions, EXT_VIDEO)
+        valid_extensions = EXT_IMAGE + EXT_VIDEO
+
         self.local = local
         self.remote = remote
-        # Ignore extensions
-        if self.cmd_args.ignore_ext:
-            extensions = self.cmd_args.ignore_ext.split(',')
-            EXT_IMAGE = filter(lambda e: e not in extensions, EXT_IMAGE)
-            EXT_VIDEO = filter(lambda e: e not in extensions, EXT_VIDEO)
 
     def start_sync(self):
-        # If args specify download
-        if self.cmd_args.download:
-            self.download()
-        # elseif args specify sync
-        elif self.cmd_args.sync_from:
-            self.sync()
-        # else (no args...) upload
+        if self.parser_args.sync:
+                logger.debug('syncing...')
+                self.sync()
+        elif self.parser_args.download: # download photos; specify a path or use "." for all
+                logger.debug('downloading...')
+                self.download()
         else:
-            self.upload()
-            logger.info('Upload complete.')
-
-            # TODO: appears monitoring daemon is only run after an upload(), not sync()
-            if self.cmd_args.monitor:
-                self.local.watch_for_changes(self.upload)
-                self.local.wait_for_quit()
+                logger.debug('uploading...')
+                self.upload()
 
     def sync(self):
-        if self.cmd_args.sync_from == "all": # "all" is the only valid command-line argument for sync_from
-            local_photo_sets = self.local.build_photo_sets(self.cmd_args.sync_path, EXT_IMAGE + EXT_VIDEO)
-            remote_photo_sets = self.remote.get_photo_sets()
-            # First download complete remote sets that are not local
-            for remote_photo_set in remote_photo_sets:
-                local_photo_set = os.path.join(self.cmd_args.sync_path, remote_photo_set).replace("/", os.sep)
-                if local_photo_set not in local_photo_sets:
-                    # TODO: generate info message if photo_set is a prefix to other set names
-                    self.cmd_args.download = local_photo_set
-                    self.download()
-            # Now walk our local sets
-            for local_photo_set in sorted(local_photo_sets):
-                remote_photo_set = local_photo_set.replace(self.cmd_args.sync_path, '').replace("/", os.sep)
-                if remote_photo_set not in remote_photo_sets:
-                    # Photo set does not exist remotely, so all files need uploading
-                    remote_photos = {}
+        local_photo_sets = self.local.build_local_photo_sets(self.parser_args.sync_path, valid_extensions)
+        remote_photo_sets = self.remote.get_photo_sets()
+
+        for remote_photo_set in remote_photo_sets: # for remote sets
+            local_photo_set = os.path.join(self.parser_args.sync_path, remote_photo_set).replace("/", os.sep)
+
+            if local_photo_set not in local_photo_sets: # download remote set if local set not present
+                if self.parser_args.dry_run:
+                    logger.info('(--dry-run) downloading photo set "%s"' % remote_photo_set)
                 else:
-                    # Filter by what exists remotely, this is a dict of filename->id
-                    remote_photos = self.remote.get_photos_in_set(remote_photo_set, get_url=True)
-                local_photos = [photo for photo, file_stat in sorted(local_photo_sets[local_photo_set])]
-                # Download what does not exist locally
-                for photo in [photo for photo in remote_photos if photo not in local_photos]:
-                    if self.cmd_args.dry_run:
-                        logger.info('Would download [%s] to [%s].' % (remote_photos[photo], local_photo_set))
-                    else:
-                        logger.info('Downloading [%s] to [%s].' % (remote_photos[photo], local_photo_set))
-                        self.remote.download(remote_photos[photo], os.path.join(local_photo_set, photo))
+                    logger.debug('downloading photo set "%s"' % remote_photo_set)
+                    self.parser_args.download = local_photo_set
+                    self.download()
 
-                # Upload what does not exist remotely
-                for photo in [photo for photo in local_photos if photo not in remote_photos]:
-                    file_path = os.path.join(local_photo_set, photo)
-                    file_stat = os.stat(file_path)
+        for local_photo_set in sorted(local_photo_sets): # for local sets
+            remote_photo_set = local_photo_set.replace(self.parser_args.sync_path, '').replace(os.sep, "/") # remote sets always use UNIX style
 
-                    # Skip files that satisfy ignore_images or ignore_videos
-                    if self.cmd_args.ignore_images and photo.split('.').pop().lower() in EXT_IMAGE:
-                        continue
-                    elif self.cmd_args.ignore_videos and photo.split('.').pop().lower() in EXT_VIDEO:
-                        continue
+            if remote_photo_set not in remote_photo_sets: remote_photos = {} # upload local set if remote set not present
+            else: remote_photos = self.remote.get_photos_in_set(remote_photo_set, get_url=True)
 
-                    # Skip files that exceed max. size for images and videos
-                    if file_stat.st_size >= IMAGE_MAX_SIZE and photo.split('.').pop().lower() in EXT_IMAGE:
-                        logger.error('Skipped [%s] because it exceeds image size limit.' % photo)
-                        continue
-                    if file_stat.st_size >= VIDEO_MAX_SIZE and photo.split('.').pop().lower() in EXT_VIDEO:
-                        logger.error('Skipped [%s] because it exceeds video size limit.' % photo)
-                        continue
+            local_photos = [photo for photo, file_stat in sorted(local_photo_sets[local_photo_set])]
 
-                    display_title = self.remote.get_custom_set_title(local_photo_set)
-                    if self.cmd_args.dry_run:
-                        logger.info('Would upload [%s] to set [%s].' % (photo, display_title))
-                    else:
-                        logger.info('Uploading [%s] to set [%s].' % (photo, display_title))
-                        self.remote.upload(file_path, photo, remote_photo_set)
-      
-        else:
-            logger.warning("Unsupported sync option: %s." % self.cmd_args.sync_from)
+            for photo in [photo for photo in remote_photos if photo not in local_photos]: # download remote photo if local not present
+                path = os.path.join(local_photo_set, photo)
+
+                if self.parser_args.dry_run:
+                    logger.info('(--dry-run) downloading "%s"' % path)
+                else:
+                    logger.info('downloading "%s"' % path)
+                    self.remote.download(remote_photos[photo], path)
+
+            for photo in [photo for photo in local_photos if photo not in remote_photos]: # upload local photo if remote not present
+                file_path = os.path.join(local_photo_set, photo)
+                file_stat = os.stat(file_path)
+
+                if self.parser_args.ignore_images and photo.split('.').pop().lower() in EXT_IMAGE:
+                    logger.debug('skipping photo "%s" (--ignore-images)' % photo)
+                    continue
+                elif self.parser_args.ignore_videos and photo.split('.').pop().lower() in EXT_VIDEO:
+                    logger.debug('skipping video "%s" (--ignore-videos)' % photo)
+                    continue
+
+                if file_stat.st_size >= IMAGE_MAX_SIZE and photo.split('.').pop().lower() in EXT_IMAGE:
+                    logger.info('skipping photo "%s" (exceeds IMAGE_MAX_SIZE)' % photo)
+                    continue
+                if file_stat.st_size >= VIDEO_MAX_SIZE and photo.split('.').pop().lower() in EXT_VIDEO:
+                    logger.info('skipping video "%s" (exceeds VIDEO_MAX_SIZE)' % photo)
+                    continue
+
+                if self.parser_args.dry_run:
+                    logger.info('(--dry-run) uploading "%s" to set "%s"' % (photo, remote_photo_set))
+                else:
+                    logger.debug('uploading "%s" to set "%s"' % (photo, remote_photo_set))
+                    self.remote.upload(file_path, photo, remote_photo_set)
 
     def download(self):
-        # Download to corresponding paths
         for photo_set in self.remote.get_photo_sets():
-            if photo_set and (self.cmd_args.download == '.' or photo_set.startswith(self.cmd_args.download)):
-                folder = os.path.join(self.cmd_args.sync_path, photo_set)
-                logger.info('Getting photos in set [%s].' % photo_set)
-                photos = self.remote.get_photos_in_set(photo_set, get_url=True)
-                # If uploaded on UNIX and downloading on Windows (or vice versa)
-                if self.cmd_args.is_windows:
+            if photo_set and (self.parser_args.download == '.' or photo_set.startswith(self.parser_args.download)):
+                folder = os.path.join(self.parser_args.sync_path, photo_set)
+
+                if self.parser_args.windows: # always upload UNIX style
                     folder = folder.replace('/', os.sep)
 
-                for photo in photos:
-                    # Skip files that satisfy ignore_images or ignore_videos
-                    if self.cmd_args.ignore_images and photo.split('.').pop().lower() in EXT_IMAGE:
-                        continue
-                    elif self.cmd_args.ignore_videos and photo.split('.').pop().lower() in EXT_VIDEO:
-                        continue
+                remote_photos = self.remote.get_photos_in_set(photo_set, get_url=True)
+
+                for photo in remote_photos:
                     path = os.path.join(folder, photo)
+
+                    if self.parser_args.ignore_images and photo.split('.').pop().lower() in EXT_IMAGE:
+                        logger.debug('skipping photo "%s" (--ignore-images)' % photo)
+                        continue
+                    elif self.parser_args.ignore_videos and photo.split('.').pop().lower() in EXT_VIDEO:
+                        logger.debug('skipping video "%s" (--ignore-videos)' % photo)
+                        continue
+
                     if os.path.exists(path):
-                        logger.debug('Skipped [%s/%s] because it was already downloaded.' % (photo_set, photo))
-                    elif self.cmd_args.dry_run:
-                        logger.info('Would download photo [%s] from set [%s].' % (photo, photo_set))
+                        #logger.debug('skipping "%s" (already exists)' % path) #TODO too many files
+                        pass
+                    elif self.parser_args.dry_run:
+                        logger.info('(--dry-run) downloading "%s"' % path)
                     else:
-                        logger.info('Downloading photo [%s] from set [%s].' % (photo, photo_set))
-                        self.remote.download(photos[photo], path)
+                        logger.info('downloading "%s"' % path)
+                        self.remote.download(remote_photos[photo], path)
 
-    def upload(self, specific_path=None):
-        if specific_path is None:
-            only_dir = self.cmd_args.sync_path
-        else:
-            only_dir = os.path.dirname(specific_path)
-        photo_sets = self.local.build_photo_sets(only_dir, EXT_IMAGE + EXT_VIDEO)
-        logger.info('Found %s photo sets.' % len(photo_sets))
+    def upload(self):
+        local_photo_sets = self.local.build_local_photo_sets(self.parser_args.sync_path, valid_extensions)
 
-        if specific_path is None:
-            # Show custom set titles
-            if self.cmd_args.custom_set:
-                for photo_set in photo_sets:
-                    logger.info('Set Title: [%s]; Path: [%s].' % (self.remote.get_custom_set_title(photo_set), photo_set))
+        for photo_set in sorted(local_photo_sets):
+            title = self.remote.custom_set_title(photo_set)
 
-                if self.cmd_args.custom_set_debug and raw_input('Is this your expected custom set titles (y/n):') != 'y':
-                    exit(0)
+            folder = photo_set.replace(self.parser_args.sync_path, '')
 
-        # Iterate through the local photo set map and upload photos that do not exist in the remote map
-        for photo_set in sorted(photo_sets):
-            folder = photo_set.replace(self.cmd_args.sync_path, '')
-            display_title = self.remote.get_custom_set_title(photo_set)
-            logger.info('Getting photos in set [%s].' % display_title)
-            photos = self.remote.get_photos_in_set(folder)
-            logger.info('Found %s photos.' % len(photos))
+            remote_photos = self.remote.get_photos_in_set(folder)
 
-            for photo, file_stat in sorted(photo_sets[photo_set]):
-                # Skip files that satisfy ignore_images or ignore_videos
-                if self.cmd_args.ignore_images and photo.split('.').pop().lower() in EXT_IMAGE:
+            for photo, file_stat in sorted(local_photo_sets[photo_set]):
+                file_path = os.path.join(photo_set, photo)                        
+
+                if self.parser_args.ignore_images and photo.split('.').pop().lower() in EXT_IMAGE:
+                    logger.debug('skipping photo "%s" (--ignore-images)' % photo)
                     continue
-                elif self.cmd_args.ignore_videos and photo.split('.').pop().lower() in EXT_VIDEO:
+                elif self.parser_args.ignore_videos and photo.split('.').pop().lower() in EXT_VIDEO:
+                    logger.debug('skipping video "%s" (--ignore-videos)' % photo)
                     continue
 
-                if photo in photos or self.cmd_args.is_windows and photo.replace(os.sep, '/') in photos:
-                    logger.debug('Skipped [%s] because it already exists in set [%s].' % (photo, display_title))
+                if photo in remote_photos or (self.parser_args.windows and photo.replace(os.sep, '/')) in remote_photos:
+                    #logger.debug('skipping "%s" in "%s" (already exists)' % (photo, title)) #TODO too many files
+                    pass
                 else:
-                    # Skip files that exceed max. size for images and videos
                     if file_stat.st_size >= IMAGE_MAX_SIZE and photo.split('.').pop().lower() in EXT_IMAGE:
-                        logger.error('Skipped [%s] over image size limit.' % photo)
+                        logger.info('skipping photo "%s" (exceeds IMAGE_MAX_SIZE)' % photo)
                         continue
                     if file_stat.st_size >= VIDEO_MAX_SIZE and photo.split('.').pop().lower() in EXT_VIDEO:
-                        logger.error('Skipped [%s] over video size limit.' % photo)
+                        logger.info('skipping video "%s" (exceeds VIDEO_MAX_SIZE)' % photo)
                         continue
 
-                    if self.cmd_args.dry_run:
-                        logger.info('Would upload [%s] to set [%s].' % (photo, display_title))
-                        continue
-
-                    logger.info('Uploading [%s] to set [%s].' % (photo, display_title))
-                    file_path = os.path.join(photo_set, photo)                        
-                    photo_id = self.remote.upload(file_path, photo, folder)
-                    if photo_id:
-                        photos[photo] = photo_id
-
+                    if self.parser_args.dry_run:
+                        logger.info('(--dry-run) uploading "%s" to "%s"' % (photo, title))
+                    else:
+                        logger.debug('uploading "%s" to "%s"' % (photo, title))
+                        photo_id = self.remote.upload(file_path, photo, folder)
+                        if photo_id:
+                            remote_photos[photo] = photo_id

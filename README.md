@@ -1,6 +1,6 @@
 # flickrsmartsync_oauth
 
-Upload, download or sync photos and videos to flickr.
+Upload, download or sync photos and videos to Flickr.
 
 ## Install
 
@@ -11,14 +11,16 @@ Download flickrsmartsync_oauth:
 ```
 
 Create your own personal Flickr API keys:
-```sh
-> https://www.flickr.com/services/apps/create/apply
-```
 
-Add api_key and api_secret to flickrsmartsync_oauth/flickrsmartsync_oauth/config.py:
 ```sh
-  api_key = u'<API_KEY>'
-  api_secret = u'<API_SECRET>'
+  1. To use this script, you must apply for your own private Flickr API keys
+  2. Visit URL
+     https://www.flickr.com/services/api/misc.api_keys.html
+  3. Apply for your key online
+  4. Apply for a non-commercial key
+  5. Store your API keys in a file named config.py with the following format
+     api_key = 'key'
+     api_secret = 'secret'
 ```
 
 Run the install script:
@@ -29,6 +31,7 @@ Run the install script:
 ## Example Usage
 
 Upload all photos and vidoes in current folder and all sub-folders:
+
 ```sh
 > flickrsmartsync_oauth
 ```

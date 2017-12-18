@@ -1,16 +1,15 @@
 #! /usr/bin/env python
 
-from setuptools import setup, find_packages
-import sys
 import os
+import sys
+from setuptools import setup, find_packages
 
-VERSION = '0.1.0'
-
+VERSION = '1.0.0'
 
 def main():
     setup(name='flickrsmartsync_oauth',
           version=VERSION,
-          description="Upload, download or sync photos and videos to flickr",
+          description="Upload, download or sync photos and videos to Flickr",
           long_description=open('README.txt').read(),
           classifiers=[
               'Development Status :: 3 - Alpha',
@@ -24,7 +23,7 @@ def main():
           packages=find_packages(exclude=['ez_setup', 'examples', 'tests']),
           include_package_data=True,
           zip_safe=False,
-          install_requires=['watchdog', 'IPTCInfo', 'six', 'requests_toolbelt', 'requests_oauthlib', 'pyyaml', 'flickrapi'],
+          install_requires=['flickrapi', 'IPTCInfo'],
           entry_points={
               "console_scripts": ['flickrsmartsync_oauth = flickrsmartsync_oauth:main'],
           },
